@@ -3,7 +3,6 @@ import * as path from "path";
 import * as mime from "mime";
 import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
-import * as awsx from "@pulumi/awsx";
 
 const websiteOAI = new aws.cloudfront.OriginAccessIdentity("PulumiWebsiteOAI");
 
@@ -38,6 +37,76 @@ for (const file of files) {
   });
 }
 
+const lambdaRole = new aws.iam.Role("lambdaRole", {
+  assumeRolePolicy: {
+    Version: "2012-10-17",
+    Statement: [
+      {
+        Action: "sts:AssumeRole",
+        Principal: {
+          Service: "lambda.amazonaws.com",
+        },
+        Effect: "Allow",
+      },
+    ],
+  },
+});
+
+const lambdaRoleAttachment = new aws.iam.RolePolicyAttachment(
+  "lambdaRoleAttachment",
+  {
+    role: lambdaRole,
+    policyArn: aws.iam.ManagedPolicy.AWSLambdaBasicExecutionRole,
+  }
+);
+
+const lambda = new aws.lambda.Function("lambdaFunction", {
+  code: new pulumi.asset.AssetArchive({
+    ".": new pulumi.asset.FileArchive("../app/api/hello"),
+  }),
+  runtime: "nodejs14.x",
+  role: lambdaRole.arn,
+  handler: "index.handler",
+});
+
+const apigw = new aws.apigatewayv2.Api("httpApiGateway", {
+  protocolType: "HTTP",
+});
+
+const lambdaPermission = new aws.lambda.Permission(
+  "lambdaPermission",
+  {
+    action: "lambda:InvokeFunction",
+    principal: "apigateway.amazonaws.com",
+    function: lambda,
+    sourceArn: pulumi.interpolate`${apigw.executionArn}/*/*`,
+  },
+  { dependsOn: [apigw, lambda] }
+);
+
+const integration = new aws.apigatewayv2.Integration("lambdaIntegration", {
+  apiId: apigw.id,
+  integrationType: "AWS_PROXY",
+  integrationUri: lambda.arn,
+  integrationMethod: "GET",
+});
+
+const route = new aws.apigatewayv2.Route("apiRoute", {
+  apiId: apigw.id,
+  routeKey: "GET /api/hello",
+  target: pulumi.interpolate`integrations/${integration.id}`,
+});
+
+const stage = new aws.apigatewayv2.Stage(
+  "apiStage",
+  {
+    apiId: apigw.id,
+    name: "$default",
+    autoDeploy: true,
+  },
+  { dependsOn: [route] }
+);
+
 const websiteDistribution = new aws.cloudfront.Distribution(
   "PulumiWebsiteDistribution",
   {
@@ -48,6 +117,21 @@ const websiteDistribution = new aws.cloudfront.Distribution(
         domainName: websiteBucket.bucketRegionalDomainName,
         s3OriginConfig: {
           originAccessIdentity: websiteOAI.cloudfrontAccessIdentityPath,
+        },
+      },
+      {
+        originId: apigw.id,
+        domainName: pulumi
+          .all([apigw.id, aws.getRegion()])
+          .apply(
+            ([apiId, region]) =>
+              `${apiId}.execute-api.${region.id}.amazonaws.com`
+          ),
+        customOriginConfig: {
+          httpPort: 80,
+          httpsPort: 443,
+          originProtocolPolicy: "https-only",
+          originSslProtocols: ["TLSv1.2"],
         },
       },
     ],
@@ -76,6 +160,21 @@ const websiteDistribution = new aws.cloudfront.Distribution(
         },
       },
     },
+    orderedCacheBehaviors: [
+      {
+        pathPattern: "/api/*",
+        allowedMethods: ["GET", "HEAD"],
+        cachedMethods: ["GET", "HEAD"],
+        targetOriginId: apigw.id,
+        viewerProtocolPolicy: "redirect-to-https",
+        forwardedValues: {
+          queryString: false,
+          cookies: {
+            forward: "none",
+          },
+        },
+      },
+    ],
     viewerCertificate: {
       cloudfrontDefaultCertificate: true,
     },
