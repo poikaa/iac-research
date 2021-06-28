@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { BrowserRouter as Router, Switch, Route, Link } from "react-router-dom";
 
 const PAGES = [
@@ -5,6 +6,20 @@ const PAGES = [
   { name: "About", path: "/about" },
   { name: "Contact", path: "/contact" },
 ];
+
+function Message() {
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    fetch("/api/hello")
+      .then((res) => res.json())
+      .then(({ message }) => {
+        setMessage(message);
+      });
+  }, []);
+
+  return <div>Message from API: {message}</div>;
+}
 
 function App() {
   return (
@@ -22,7 +37,10 @@ function App() {
         <Switch>
           {PAGES.map(({ name, path }) => (
             <Route key={path} path={path} exact>
-              <h1>{name}</h1>
+              <>
+                <h1>{name}</h1>
+                <Message />
+              </>
             </Route>
           ))}
         </Switch>

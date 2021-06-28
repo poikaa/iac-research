@@ -2,6 +2,9 @@ import * as path from "path";
 import * as cdk from "@aws-cdk/core";
 import * as s3 from "@aws-cdk/aws-s3";
 import * as s3deploy from "@aws-cdk/aws-s3-deployment";
+import * as lambda from "@aws-cdk/aws-lambda";
+import * as apigw2 from "@aws-cdk/aws-apigatewayv2";
+import { LambdaProxyIntegration } from "@aws-cdk/aws-apigatewayv2-integrations";
 import * as cf from "@aws-cdk/aws-cloudfront";
 import * as origins from "@aws-cdk/aws-cloudfront-origins";
 
@@ -19,6 +22,22 @@ export class CdkStack extends cdk.Stack {
         s3deploy.Source.asset(path.join(__dirname, "../../app/client/build")),
       ],
       destinationBucket: websiteBucket,
+    });
+
+    const helloHandler = new lambda.Function(this, "WebsiteHelloHandler", {
+      runtime: lambda.Runtime.NODEJS_14_X,
+      code: lambda.Code.fromAsset(path.join(__dirname, "../../app/api/hello")),
+      handler: "index.handler",
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(3),
+    });
+
+    const websiteApi = new apigw2.HttpApi(this, "WebsiteApi");
+
+    websiteApi.addRoutes({
+      path: "/api/hello",
+      methods: [apigw2.HttpMethod.GET],
+      integration: new LambdaProxyIntegration({ handler: helloHandler }),
     });
 
     const websiteDistribution = new cf.Distribution(
@@ -42,6 +61,16 @@ export class CdkStack extends cdk.Stack {
             responsePagePath: "/index.html",
           },
         ],
+      }
+    );
+
+    websiteDistribution.addBehavior(
+      "/api/*",
+      new origins.HttpOrigin(
+        `${websiteApi.httpApiId}.execute-api.${this.region}.amazonaws.com`
+      ),
+      {
+        allowedMethods: cf.AllowedMethods.ALLOW_ALL,
       }
     );
 
